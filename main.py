@@ -2120,7 +2120,7 @@ class MainWindow(QMainWindow):
     #  显示作者
     # --------------------------------------------------------
     def show_author(self):
-        QMessageBox.information(self, "作者", "作者：从摸鱼做起")
+        QMessageBox.information(self, "作者", "作者：me")
 
     # --------------------------------------------------------
     #  打开点名器
