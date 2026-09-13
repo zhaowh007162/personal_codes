@@ -56,7 +56,7 @@ pip install nuitka
 在源文件所在目录打开 PowerShell：
 
 ```powershell
-python -m nuitka --standalone --onefile --windows-console-mode=disable --windows-icon-from-ico=1.ico --company-name=G2504电教 --product-name=多功能应用 --file-version=9.1.7.8 --product-version=6.7.6.7 --output-dir=build --output-filename=SeatApp.exe --remove-output --assume-yes-for-downloads --python-flag=-OO --lto=yes --enable-plugin=pyqt5 --include-qt-plugins=sensible,styles seat_app_C.py
+python -m nuitka --standalone --onefile --windows-console-mode=disable --windows-icon-from-ico=1.ico --company-name=selected --product-name=fancy --file-version=9.1.7.8 --product-version=6.7.6.7 --output-dir=build --output-filename=SeatApp.exe --remove-output --assume-yes-for-downloads --python-flag=-OO --lto=yes --enable-plugin=pyqt5 --include-qt-plugins=sensible,styles seat_app_C.py
 ```
 
 **参数说明：**
