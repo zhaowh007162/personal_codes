@@ -1,0 +1,3 @@
+use pyinstaller to make a package
+a means 3
+b means 3+3
