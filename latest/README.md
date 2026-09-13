@@ -54,9 +54,13 @@ pip install nuitka
 ### 2.2 一键编译
 
 在源文件所在目录打开 PowerShell：
+```powershell
+$env:CCFLAGS = "/utf-8"
+```
 
 ```powershell
-python -m nuitka --standalone --onefile --windows-console-mode=disable --windows-icon-from-ico=1.ico --company-name=selected --product-name=fancy --file-version=9.1.7.8 --product-version=6.7.6.7 --output-dir=build --output-filename=SeatApp.exe --remove-output --assume-yes-for-downloads --python-flag=-OO --lto=yes --enable-plugin=pyqt5 --include-qt-plugins=sensible,styles seat_app_C.py
+cd D:\
+python -m nuitka --standalone --onefile --windows-console-mode=disable --windows-icon-from-ico=1.ico --company-name=程序 --product-name=应用 --file-version=9.1.7.8 --product-version=6.7.6.7 --output-dir=build --output-filename=应用名.exe --remove-output --assume-yes-for-downloads --python-flag=-OO --lto=yes --enable-plugin=pyqt5 --include-qt-plugins=sensible,styles seat_app_C.py
 ```
 
 **参数说明：**
