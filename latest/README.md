@@ -62,7 +62,10 @@ $env:CCFLAGS = "/utf-8"
 cd D:\
 python -m nuitka --standalone --onefile --windows-console-mode=disable --windows-icon-from-ico=1.ico --company-name=程序 --product-name=应用 --file-version=9.1.7.8 --product-version=6.7.6.7 --output-dir=build --output-filename=应用名.exe --remove-output --assume-yes-for-downloads --python-flag=-OO --lto=yes --enable-plugin=pyqt5 --include-qt-plugins=sensible,styles seat_app_C.py
 ```
-
+> 下面是更加高级的代码
+```
+python -m nuitka --mode=onefile --output-dir=D:\路径 --output-filename=文件名 --windows-console-mode=disable --windows-icon-from-ico=D:\g2504\图标.ico --enable-plugin=pyqt5 --msvc=14.3 --onefile-no-compression --onefile-cache-mode=cached --include-windows-runtime-dlls=yes --company-name=公司名 --product-name=产品名称 --file-version=9.1.7.8 --product-version=67.67.7891.9178 --file-description=解说词随便填 --copyright=依旧公司 --remove-output --windows-uac-admin --low-memory --lto=no --python-flag=no_docstrings --no-deployment-flag=excluded-module-usage --assume-yes-for-downloads --report=C:\Users\Administrator\.PyProtect\logs\2026-09-18-21-03-29.xml --report-template=report_template.j2:C:\Users\Administrator\.PyProtect\logs\2026-09-18-21-03-29.txt D:\路径\程序.py
+```
 **参数说明：**
 
 | 参数 | 作用 |
